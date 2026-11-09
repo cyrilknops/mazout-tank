@@ -5,7 +5,7 @@
  *   name: Gasoil tank                   # optional
  *   show_actions: true                  # optional, delivery / gauge input
  */
-const CARD_VERSION = "1.0.4";
+const CARD_VERSION = "2026.11.9";
 
 const fmt = (v, d = 0) =>
   v === null || v === undefined || isNaN(Number(v))

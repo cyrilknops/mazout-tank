@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Final
 
 DOMAIN: Final = "oil_tank"
-VERSION: Final = "1.1.1"
+VERSION: Final = "2026.11.9"
 
 CONF_RUNTIME_ENTITY: Final = "runtime_entity"
 CONF_PRICE_ENTITY: Final = "price_entity"
