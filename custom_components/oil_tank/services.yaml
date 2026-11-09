@@ -1,0 +1,59 @@
+add_delivery:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: oil_tank
+    liters:
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 100000
+          step: 1
+          unit_of_measurement: L
+          mode: box
+set_level:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: oil_tank
+    gauge_cm:
+      selector:
+        number:
+          min: 0
+          max: 1000
+          step: 0.5
+          unit_of_measurement: cm
+          mode: box
+    liters:
+      selector:
+        number:
+          min: 0
+          max: 100000
+          step: 1
+          unit_of_measurement: L
+          mode: box
+calibrate_flow:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: oil_tank
+    gauge_cm:
+      selector:
+        number:
+          min: 0
+          max: 1000
+          step: 0.5
+          unit_of_measurement: cm
+          mode: box
+    liters:
+      selector:
+        number:
+          min: 0
+          max: 100000
+          step: 1
+          unit_of_measurement: L
+          mode: box

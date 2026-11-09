@@ -1,0 +1,19 @@
+{
+  "domain": "oil_tank",
+  "name": "Heating Oil Tank",
+  "codeowners": [
+    "@cyrilknops"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "http",
+    "frontend",
+    "lovelace"
+  ],
+  "documentation": "https://github.com/cyrilknops/mazout-tank",
+  "integration_type": "device",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/cyrilknops/mazout-tank/issues",
+  "requirements": [],
+  "version": "1.1.1"
+}

@@ -1,0 +1,107 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Heating oil tank",
+        "description": "Calculates the oil level from the burner runtime counter (for example the KM271 'Brennerlaufzeit 1').",
+        "data": {
+          "name": "Name",
+          "runtime_entity": "Burner runtime counter",
+          "price_entity": "Oil price sensor (optional)",
+          "capacity": "Tank capacity",
+          "liters_per_cm": "Liters per cm of height",
+          "low_alert": "Low level alert",
+          "flow_rate": "Burner flow rate",
+          "initial_gauge_cm": "Gauge reading now"
+        },
+        "data_description": {
+          "runtime_entity": "Total burner time sensor (min, h or s).",
+          "price_entity": "Sensor with the price per liter, for the cost sensors.",
+          "capacity": "Total volume of the tank.",
+          "liters_per_cm": "Volume for 1 cm on the tank gauge. Example: 35 cm = 1000 L gives 28.6.",
+          "low_alert": "Below this volume, the low-level sensor is on and you get a notification.",
+          "flow_rate": "Oil use per burner hour. Buderus G115/21 ≈ 2.3, G115/28 ≈ 3.0, G115/34 ≈ 3.8 L/h. Calibrate later with the gauge.",
+          "initial_gauge_cm": "Value on the tank gauge (cm) now. This is the start level."
+        }
+      }
+    },
+    "error": {
+      "above_capacity": "This gauge reading is more than the tank capacity."
+    },
+    "abort": {
+      "already_configured": "This burner counter already has a tank."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Tank settings",
+        "description": "To change the level or the flow rate, use the actions or the flow rate entity.",
+        "data": {
+          "runtime_entity": "Burner runtime counter",
+          "price_entity": "Oil price sensor (optional)",
+          "capacity": "Tank capacity",
+          "liters_per_cm": "Liters per cm of height",
+          "low_alert": "Low level alert"
+        },
+        "data_description": {
+          "capacity": "Total volume of the tank.",
+          "liters_per_cm": "Volume for 1 cm on the tank gauge. Example: 35 cm = 1000 L gives 28.6.",
+          "low_alert": "Below this volume, the low-level sensor is on and you get a notification."
+        }
+      }
+    }
+  },
+  "services": {
+    "add_delivery": {
+      "name": "Add delivery",
+      "description": "Adds delivered oil to the current level.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Tank",
+          "description": "Not necessary when you have one tank."
+        },
+        "liters": {
+          "name": "Liters",
+          "description": "Liters on the delivery note."
+        }
+      }
+    },
+    "set_level": {
+      "name": "Set level",
+      "description": "Sets the level from a gauge reading or a volume.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Tank",
+          "description": "Not necessary when you have one tank."
+        },
+        "gauge_cm": {
+          "name": "Gauge reading",
+          "description": "Value on the tank gauge."
+        },
+        "liters": {
+          "name": "Liters",
+          "description": "Volume in the tank (instead of the gauge reading)."
+        }
+      }
+    },
+    "calibrate_flow": {
+      "name": "Calibrate flow rate",
+      "description": "Calculates the real burner flow rate from the level drop since the last reference, then sets the new level.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Tank",
+          "description": "Not necessary when you have one tank."
+        },
+        "gauge_cm": {
+          "name": "Gauge reading",
+          "description": "Value on the tank gauge now."
+        },
+        "liters": {
+          "name": "Liters",
+          "description": "Volume in the tank now (instead of the gauge reading)."
+        }
+      }
+    }
+  }
+}
