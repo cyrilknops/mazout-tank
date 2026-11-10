@@ -24,6 +24,7 @@ from homeassistant.helpers.selector import (
 
 from .const import (
     CONF_CAPACITY,
+    CONF_DEFAULT_PRICE,
     CONF_FLOW_RATE,
     CONF_INITIAL_CM,
     CONF_LITERS_PER_CM,
@@ -50,6 +51,7 @@ def _num(min_v: float, max_v: float, step: float, unit: str) -> NumberSelector:
 
 
 SENSOR = EntitySelector(EntitySelectorConfig(domain="sensor"))
+PRICE = _num(0, 10, 0.001, "EUR/L")
 
 TANK_FIELDS = {
     vol.Required(CONF_CAPACITY, default=DEFAULT_CAPACITY): _num(50, 100000, 1, "L"),
@@ -77,6 +79,7 @@ class OilTankConfigFlow(ConfigFlow, domain=DOMAIN):
             {
                 vol.Required(CONF_NAME, default=DEFAULT_NAME): str,
                 vol.Required(CONF_RUNTIME_ENTITY): SENSOR,
+                vol.Optional(CONF_DEFAULT_PRICE): PRICE,
                 vol.Optional(CONF_PRICE_ENTITY): SENSOR,
                 **TANK_FIELDS,
                 vol.Required(CONF_FLOW_RATE, default=DEFAULT_FLOW_RATE): _num(
@@ -103,12 +106,14 @@ class OilTankOptionsFlow(OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         if user_input is not None:
             user_input.setdefault(CONF_PRICE_ENTITY, None)
+            user_input.setdefault(CONF_DEFAULT_PRICE, None)
             return self.async_create_entry(data=user_input)
 
         current = {**self.config_entry.data, **self.config_entry.options}
         schema = vol.Schema(
             {
                 vol.Required(CONF_RUNTIME_ENTITY): SENSOR,
+                vol.Optional(CONF_DEFAULT_PRICE): PRICE,
                 vol.Optional(CONF_PRICE_ENTITY): SENSOR,
                 **TANK_FIELDS,
             }

@@ -55,8 +55,10 @@ The integration keeps the oil in the tank per delivery and burns the oldest oil 
 
 - Oil that was in the tank before the first delivery with a price has no known price.
   It gets the price of the next delivery with a price, and so does the oil that burned in the meantime.
+- Until then, the **Default oil price** setting (Settings → Devices & services → Heating Oil Tank → Configure)
+  gives a price for this oil. When you save it, the liters that burned without a price are booked at it.
 - A gauge correction (`set_level`) moves the level, but it does not add cost.
-- The optional price sensor is only a fallback for oil without a price.
+- The optional price sensor is only a fallback for oil without a price. It goes before the default price.
 - The "Oil price" sensor shows the batches in the tank and the last 20 deliveries as attributes.
 
 ## Actions

@@ -332,3 +332,39 @@ async def test_price_sensor_is_only_a_fallback(hass: HomeAssistant, freezer) -> 
     await hass.async_block_till_done()
     # The old oil was given the delivery price; the sensor price is not used
     assert _f(hass, TOTAL) == pytest.approx(36.0)
+
+
+async def test_default_price_from_settings(hass: HomeAssistant, freezer) -> None:
+    freezer.move_to("2026-11-02 01:00:00+00:00")
+    _runtime(hass, 733268)
+    entry = await _setup(hass, NOPRICE)
+    # 30 L burned with an unknown price
+    freezer.tick(timedelta(hours=11))
+    _runtime(hass, 733268 + 600)
+    await hass.async_block_till_done()
+    assert _f(hass, TOTAL) == 0
+
+    # Set a default price in the settings: the unpriced liters are booked at it
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert "default_price" in result["data_schema"].schema
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {"runtime_entity": SRC, "default_price": 1.2, "capacity": 4000.0, "liters_per_cm": 28.6, "low_alert": 500.0},
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+    assert _f(hass, TOTAL) == pytest.approx(36.0)
+    assert _f(hass, OILPRICE) == pytest.approx(1.2)
+    assert hass.states.get(OILPRICE).attributes["unpriced_liters"] == 0
+
+    freezer.tick(timedelta(hours=11))
+    _runtime(hass, 733268 + 1200)  # 30 L more at the default price
+    await hass.async_block_till_done()
+    assert _f(hass, TOTAL) == pytest.approx(72.0)
+
+    # A delivery with a price replaces the default price for the old oil
+    await hass.services.async_call(DOMAIN, "add_delivery", {"liters": 500, "price_per_liter": 1.5}, blocking=True)
+    freezer.tick(timedelta(hours=11))
+    _runtime(hass, 733268 + 1800)
+    await hass.async_block_till_done()
+    assert _f(hass, TOTAL) == pytest.approx(117.0)

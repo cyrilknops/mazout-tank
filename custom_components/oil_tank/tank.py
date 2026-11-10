@@ -35,6 +35,7 @@ from .const import (
     CALIBRATE_MIN_HOURS,
     CALIBRATE_MIN_LITERS,
     CONF_CAPACITY,
+    CONF_DEFAULT_PRICE,
     CONF_FLOW_RATE,
     CONF_INITIAL_CM,
     CONF_LITERS_PER_CM,
@@ -135,6 +136,11 @@ class OilTank:
             # The oil that is in the tank now: price unknown until the next delivery with a price
             level = self.level
             stored["batches"] = [{"liters": level, "price": None, "date": None}] if level > BATCH_EPS else []
+        # Liters burned before a price was known: book them at the fallback price
+        fallback = self.fallback_price
+        if fallback is not None and stored["unpriced_liters"] > 0:
+            stored["total_cost"] += stored["unpriced_liters"] * fallback
+            stored["unpriced_liters"] = 0.0
 
         self._unsubs.append(
             async_track_state_change_event(
@@ -360,6 +366,21 @@ class OilTank:
             return None
 
     @property
+    def default_price(self) -> float | None:
+        """Price from the settings, for oil without a known price."""
+        value = self._cfg.get(CONF_DEFAULT_PRICE)
+        try:
+            return float(value) if value not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    @property
+    def fallback_price(self) -> float | None:
+        """Price for oil without a delivery price: price sensor, then default price."""
+        price = self.entity_price
+        return price if price is not None else self.default_price
+
+    @property
     def last_paid_price(self) -> float | None:
         """Price per liter of the newest delivery with a price."""
         for delivery in reversed(self.data.get("deliveries", [])):
@@ -370,7 +391,7 @@ class OilTank:
     def _batch_price(self, batch: dict[str, Any]) -> float | None:
         if batch.get("price") is not None:
             return float(batch["price"])
-        return self.entity_price
+        return self.fallback_price
 
     @property
     def price(self) -> float | None:
@@ -381,7 +402,7 @@ class OilTank:
                 if price is not None:
                     return price
                 break
-        return self.last_paid_price if self.last_paid_price is not None else self.entity_price
+        return self.last_paid_price if self.last_paid_price is not None else self.fallback_price
 
     def cost(self, liters: float | None) -> float | None:
         price = self.price
@@ -526,7 +547,7 @@ class OilTank:
             price = total_price / liters
         paid = price is not None
         if price is None:
-            price = self.entity_price
+            price = self.fallback_price
         if price is not None:
             price = round(float(price), 4)
             # Oil with an unknown price gets the new price

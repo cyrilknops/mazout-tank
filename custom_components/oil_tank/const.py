@@ -9,6 +9,7 @@ VERSION: Final = "2026.11.10"
 
 CONF_RUNTIME_ENTITY: Final = "runtime_entity"
 CONF_PRICE_ENTITY: Final = "price_entity"
+CONF_DEFAULT_PRICE: Final = "default_price"
 CONF_CAPACITY: Final = "capacity"
 CONF_LITERS_PER_CM: Final = "liters_per_cm"
 CONF_FLOW_RATE: Final = "flow_rate"

@@ -7,6 +7,7 @@
         "data": {
           "name": "Name",
           "runtime_entity": "Burner runtime counter",
+          "default_price": "Default oil price (optional)",
           "price_entity": "Fallback oil price sensor (optional)",
           "capacity": "Tank capacity",
           "liters_per_cm": "Liters per cm of height",
@@ -16,6 +17,7 @@
         },
         "data_description": {
           "runtime_entity": "Total burner time sensor (min, h or s).",
+          "default_price": "Price per liter for oil without a known price, for example the oil in the tank before the first delivery with a price. A delivery with a price replaces it.",
           "price_entity": "Only used for oil without a price. Give the price with each delivery instead.",
           "capacity": "Total volume of the tank.",
           "liters_per_cm": "Volume for 1 cm on the tank gauge. Example: 35 cm = 1000 L gives 28.6.",
@@ -39,12 +41,14 @@
         "description": "To change the level or the flow rate, use the actions or the flow rate entity.",
         "data": {
           "runtime_entity": "Burner runtime counter",
+          "default_price": "Default oil price (optional)",
           "price_entity": "Fallback oil price sensor (optional)",
           "capacity": "Tank capacity",
           "liters_per_cm": "Liters per cm of height",
           "low_alert": "Low level alert"
         },
         "data_description": {
+          "default_price": "Price per liter for oil without a known price, for example the oil in the tank before the first delivery with a price. A delivery with a price replaces it.",
           "capacity": "Total volume of the tank.",
           "liters_per_cm": "Volume for 1 cm on the tank gauge. Example: 35 cm = 1000 L gives 28.6.",
           "low_alert": "Below this volume, the low-level sensor is on and you get a notification."
