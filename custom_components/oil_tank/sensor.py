@@ -106,7 +106,7 @@ SENSORS: tuple[OilTankSensorDescription, ...] = (
         native_unit_of_measurement="EUR",
         device_class=SensorDeviceClass.MONETARY,
         suggested_display_precision=2,
-        value_fn=lambda t: t.cost(t.used_today),
+        value_fn=lambda t: t.cost_today,
     ),
     OilTankSensorDescription(
         key="cost_month",
@@ -115,7 +115,7 @@ SENSORS: tuple[OilTankSensorDescription, ...] = (
         native_unit_of_measurement="EUR",
         device_class=SensorDeviceClass.MONETARY,
         suggested_display_precision=2,
-        value_fn=lambda t: t.cost(t.used_month),
+        value_fn=lambda t: t.cost_month,
     ),
     OilTankSensorDescription(
         key="tank_value",
@@ -124,7 +124,7 @@ SENSORS: tuple[OilTankSensorDescription, ...] = (
         native_unit_of_measurement="EUR",
         device_class=SensorDeviceClass.MONETARY,
         suggested_display_precision=0,
-        value_fn=lambda t: t.cost(t.level),
+        value_fn=lambda t: t.tank_value,
     ),
     OilTankSensorDescription(
         key="consumption",
@@ -145,6 +145,14 @@ SENSORS: tuple[OilTankSensorDescription, ...] = (
         state_class=SensorStateClass.TOTAL,
         suggested_display_precision=2,
         value_fn=lambda t: t.total_cost,
+    ),
+    OilTankSensorDescription(
+        key="oil_price",
+        name="Oil price",
+        icon="mdi:cash-multiple",
+        native_unit_of_measurement="EUR/L",
+        suggested_display_precision=3,
+        value_fn=lambda t: t.price,
     ),
     OilTankSensorDescription(
         key="runtime_since_reference",
@@ -177,6 +185,17 @@ class OilTankSensor(OilTankEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
+        if self.entity_description.key == "oil_price":
+            t = self.tank
+            return {
+                "batches": [
+                    {"liters": round(b["liters"], 1), "price": b.get("price"), "date": b.get("date")}
+                    for b in t.data.get("batches", [])
+                ],
+                "deliveries": t.data.get("deliveries", []),
+                "unpriced_liters": t.unpriced_liters,
+                "last_paid_price": t.last_paid_price,
+            }
         if self.entity_description.key != "level":
             return None
         t = self.tank

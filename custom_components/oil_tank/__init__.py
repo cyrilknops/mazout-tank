@@ -28,6 +28,8 @@ from .const import (
     ATTR_CONFIG_ENTRY_ID,
     ATTR_GAUGE_CM,
     ATTR_LITERS,
+    ATTR_PRICE_PER_LITER,
+    ATTR_TOTAL_PRICE,
     CARD_URL,
     DOMAIN,
     SERVICE_ADD_DELIVERY,
@@ -46,7 +48,14 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 type OilTankConfigEntry = ConfigEntry[OilTank]
 
 _BASE = {vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string}
-DELIVERY_SCHEMA = vol.Schema({**_BASE, vol.Required(ATTR_LITERS): vol.Coerce(float)})
+DELIVERY_SCHEMA = vol.Schema(
+    {
+        **_BASE,
+        vol.Required(ATTR_LITERS): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
+        vol.Optional(ATTR_PRICE_PER_LITER): vol.All(vol.Coerce(float), vol.Range(min=0)),
+        vol.Optional(ATTR_TOTAL_PRICE): vol.All(vol.Coerce(float), vol.Range(min=0)),
+    }
+)
 LEVEL_SCHEMA = vol.All(
     vol.Schema(
         {
@@ -94,7 +103,11 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         return float(call.data[ATTR_GAUGE_CM]) * tank.liters_per_cm
 
     async def add_delivery(call: ServiceCall) -> None:
-        _tank(call).add_delivery(call.data[ATTR_LITERS])
+        _tank(call).add_delivery(
+            call.data[ATTR_LITERS],
+            price_per_liter=call.data.get(ATTR_PRICE_PER_LITER),
+            total_price=call.data.get(ATTR_TOTAL_PRICE),
+        )
 
     async def set_level(call: ServiceCall) -> None:
         tank = _tank(call)

@@ -6,6 +6,12 @@ The level is calculated from ONE reference point:
 
 Nothing is added up over time, so restarts, an offline ESP or a missing
 value cannot make the level drift. The reference point is stored on disk.
+
+Cost: the oil in the tank is kept as batches (one per delivery, oldest first),
+each with the price paid per liter. Burned oil comes from the oldest batch
+(first in, first out), so the cost uses the price that was really paid.
+Oil with an unknown price (for example oil that was in the tank before the
+first delivery with a price) gets the price of the next delivery with a price.
 """
 
 from __future__ import annotations
@@ -50,6 +56,10 @@ _LOGGER = logging.getLogger(__name__)
 STORAGE_VERSION = 1
 # A counter cannot run faster than the clock. Allow a small margin.
 GLITCH_MARGIN_MIN = 5.0
+# Batches smaller than this are empty (rounding of the level)
+BATCH_EPS = 0.05
+# Deliveries kept in the history attribute
+DELIVERY_HISTORY = 20
 
 
 class OilTank:
@@ -117,7 +127,14 @@ class OilTank:
         # Cumulative totals for the Energy dashboard (added in 1.1.0)
         stored.setdefault("total_liters", 0.0)
         stored.setdefault("total_cost", 0.0)
+        # Price per delivery (added in 2026.11.10)
+        stored.setdefault("unpriced_liters", 0.0)
+        stored.setdefault("deliveries", [])
         self.data = stored
+        if "batches" not in stored:
+            # The oil that is in the tank now: price unknown until the next delivery with a price
+            level = self.level
+            stored["batches"] = [{"liters": level, "price": None, "date": None}] if level > BATCH_EPS else []
 
         self._unsubs.append(
             async_track_state_change_event(
@@ -225,9 +242,7 @@ class OilTank:
             # totals always go up (Energy dashboard requirement).
             liters = self._liters_for_minutes(runtime - last)
             d["total_liters"] = d.get("total_liters", 0.0) + liters
-            price = self.price
-            if price is not None:
-                d["total_cost"] = d.get("total_cost", 0.0) + liters * price
+            d["total_cost"] = d.get("total_cost", 0.0) + self._take(liters, book=True)
 
         if d["pending"] or d["ref_runtime"] is None:
             d["ref_runtime"] = runtime
@@ -244,6 +259,7 @@ class OilTank:
         d["last_runtime"] = runtime
         d["last_update"] = now
         self._roll_periods(runtime)
+        self._reconcile()
         self._check_low()
         self._save()
         self._notify()
@@ -257,10 +273,12 @@ class OilTank:
         if d.get("day") != today:
             d["day"] = today
             d["day_start"] = runtime
+            d["day_cost_start"] = d.get("total_cost", 0.0)
             d["history"] = [*d.get("history", []), [now.timestamp(), runtime]][-HISTORY_DAYS:]
         if d.get("month") != month:
             d["month"] = month
             d["month_start"] = runtime
+            d["month_cost_start"] = d.get("total_cost", 0.0)
 
     # ----------------------------------------------------------- calculations
     def _clamp(self, liters: float) -> float:
@@ -329,8 +347,10 @@ class OilTank:
             return None
         return round(max(self.level - self.low_alert, 0) / avg)
 
+    # ----------------------------------------------------------------- prices
     @property
-    def price(self) -> float | None:
+    def entity_price(self) -> float | None:
+        """Price from the optional price sensor (only a fallback)."""
         if not self.price_entity:
             return None
         state = self.hass.states.get(self.price_entity)
@@ -339,11 +359,114 @@ class OilTank:
         except ValueError:
             return None
 
+    @property
+    def last_paid_price(self) -> float | None:
+        """Price per liter of the newest delivery with a price."""
+        for delivery in reversed(self.data.get("deliveries", [])):
+            if delivery.get("price") is not None:
+                return float(delivery["price"])
+        return None
+
+    def _batch_price(self, batch: dict[str, Any]) -> float | None:
+        if batch.get("price") is not None:
+            return float(batch["price"])
+        return self.entity_price
+
+    @property
+    def price(self) -> float | None:
+        """Price per liter of the oil that burns now (the oldest batch)."""
+        for batch in self.data.get("batches", []):
+            if batch["liters"] > BATCH_EPS:
+                price = self._batch_price(batch)
+                if price is not None:
+                    return price
+                break
+        return self.last_paid_price if self.last_paid_price is not None else self.entity_price
+
     def cost(self, liters: float | None) -> float | None:
         price = self.price
         if price is None or liters is None:
             return None
         return round(liters * price, 2)
+
+    def _period_cost(self, key: str, liters: float | None) -> float | None:
+        start = self.data.get(key)
+        if start is None:
+            # Data from before 2026.11.10: estimate until the next day or month
+            return self.cost(liters)
+        return round(max(self.data.get("total_cost", 0.0) - start, 0.0), 2)
+
+    @property
+    def cost_today(self) -> float | None:
+        return self._period_cost("day_cost_start", self.used_today)
+
+    @property
+    def cost_month(self) -> float | None:
+        return self._period_cost("month_cost_start", self.used_month)
+
+    @property
+    def tank_value(self) -> float | None:
+        total = 0.0
+        for batch in self.data.get("batches", []):
+            price = self._batch_price(batch)
+            if price is None:
+                price = self.price
+            if price is None:
+                return None
+            total += batch["liters"] * price
+        return round(total, 2)
+
+    @property
+    def unpriced_liters(self) -> float:
+        """Burned liters with an unknown price, booked at the next priced delivery."""
+        return round(self.data.get("unpriced_liters", 0.0), 1)
+
+    # ---------------------------------------------------------------- batches
+    @callback
+    def _take(self, liters: float, book: bool) -> float:
+        """Take liters from the oldest batches. Return the known cost if book."""
+        d = self.data
+        left = max(liters, 0.0)
+        cost = 0.0
+        batches = d.setdefault("batches", [])
+        for batch in batches:
+            if left <= 0:
+                break
+            take = min(batch["liters"], left)
+            if take <= 0:
+                continue
+            if book:
+                price = self._batch_price(batch)
+                if price is None:
+                    d["unpriced_liters"] = d.get("unpriced_liters", 0.0) + take
+                else:
+                    cost += take * price
+            batch["liters"] -= take
+            left -= take
+        if left > 0 and book:
+            # More burned than the batches hold (level rounding): newest known price
+            price = self.price
+            if price is None:
+                d["unpriced_liters"] = d.get("unpriced_liters", 0.0) + left
+            else:
+                cost += left * price
+        d["batches"] = [b for b in batches if b["liters"] > BATCH_EPS]
+        return cost
+
+    @callback
+    def _reconcile(self) -> None:
+        """Make the batches hold exactly the calculated level (gauge corrections)."""
+        d = self.data
+        batches = d.setdefault("batches", [])
+        total = sum(b["liters"] for b in batches)
+        level = self.level
+        if total > level + BATCH_EPS:
+            self._take(total - level, book=False)
+        elif level > total + BATCH_EPS:
+            if batches:
+                batches[-1]["liters"] += level - total
+            else:
+                batches.append({"liters": level - total, "price": self.last_paid_price, "date": None})
 
     @property
     def total_liters(self) -> float:
@@ -384,12 +507,46 @@ class OilTank:
             d["pending"] = False
         else:
             d["pending"] = True
+        self._reconcile()
         self._check_low()
         self._save()
         self._notify()
 
     @callback
-    def add_delivery(self, liters: float) -> None:
+    def add_delivery(
+        self,
+        liters: float,
+        price_per_liter: float | None = None,
+        total_price: float | None = None,
+    ) -> None:
+        """Add delivered oil, with the price paid (per liter or in total)."""
+        d = self.data
+        price = price_per_liter
+        if price is None and total_price is not None and liters > 0:
+            price = total_price / liters
+        paid = price is not None
+        if price is None:
+            price = self.entity_price
+        if price is not None:
+            price = round(float(price), 4)
+            # Oil with an unknown price gets the new price
+            for batch in d.setdefault("batches", []):
+                if batch.get("price") is None:
+                    batch["price"] = price
+            if d.get("unpriced_liters"):
+                d["total_cost"] = d.get("total_cost", 0.0) + d["unpriced_liters"] * price
+                d["unpriced_liters"] = 0.0
+        today = dt_util.now().date().isoformat()
+        d["batches"].append({"liters": float(liters), "price": price, "date": today})
+        d["deliveries"] = [
+            *d.get("deliveries", []),
+            {
+                "date": today,
+                "liters": round(float(liters), 1),
+                "price": price if paid else None,
+                "total": round(float(liters) * price, 2) if paid and price is not None else None,
+            },
+        ][-DELIVERY_HISTORY:]
         self.set_level(self.level + liters)
 
     @callback

@@ -66,6 +66,7 @@ class OilTankCard extends HTMLElement {
         .pct { position: absolute; left: 0; right: 0; text-align: center; font-weight: 600; font-size: .95rem; color: var(--primary-text-color); text-shadow: 0 0 4px var(--card-background-color, #fff); }
         .actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
         .act { display: flex; gap: 6px; align-items: center; }
+        .act #dprice { flex: 0 0 5.5em; }
         .act input { width: 100%; min-width: 0; box-sizing: border-box; padding: 8px; border-radius: 8px; font: inherit;
                      border: 1px solid var(--divider-color, #ccc); background: var(--card-background-color); color: var(--primary-text-color); }
         .act button { padding: 8px 10px; border-radius: 8px; border: 0; cursor: pointer; font: inherit; white-space: nowrap;
@@ -94,7 +95,7 @@ class OilTankCard extends HTMLElement {
         </div>
         <div class="warn" id="pending" hidden></div>
         <div class="actions" id="actions">
-          <div class="act"><input id="deliv" type="number" min="1" step="1" placeholder="Delivery (L)" aria-label="Delivered liters"><button id="bdeliv">Add</button></div>
+          <div class="act"><input id="deliv" type="number" min="1" step="1" placeholder="Delivery (L)" aria-label="Delivered liters"><input id="dprice" type="number" min="0" step="0.001" placeholder="€/L" aria-label="Price paid per liter"><button id="bdeliv">Add</button></div>
           <div class="act"><input id="gauge" type="number" min="0" step="0.5" placeholder="Gauge (cm)" aria-label="Gauge reading in cm"><button id="bgauge">Set</button></div>
         </div>
         <div class="msg" id="msg"></div>
@@ -105,17 +106,24 @@ class OilTankCard extends HTMLElement {
       ev.detail = { entityId: this._config.entity };
       this.dispatchEvent(ev);
     });
-    $("bdeliv").addEventListener("click", () => this._call("add_delivery", "liters", $("deliv")));
+    $("bdeliv").addEventListener("click", () => this._call("add_delivery", "liters", $("deliv"), $("dprice")));
     $("bgauge").addEventListener("click", () => this._call("set_level", "gauge_cm", $("gauge")));
     this._root = root;
     this._built = true;
   }
 
-  async _call(service, field, input) {
+  async _call(service, field, input, priceInput) {
     const value = Number(input.value);
     const msg = this._root.getElementById("msg");
     if (!input.value || isNaN(value) || value < 0) {
       msg.textContent = "Type a number first.";
+      return;
+    }
+    // Optional price paid per liter (a comma also works as decimal sign)
+    const priceText = priceInput ? priceInput.value.trim().replace(",", ".") : "";
+    const price = priceText === "" ? null : Number(priceText);
+    if (price !== null && (isNaN(price) || price < 0)) {
+      msg.textContent = "Type a valid price per liter.";
       return;
     }
     const st = this._hass.states[this._config.entity];
@@ -123,9 +131,13 @@ class OilTankCard extends HTMLElement {
       await this._hass.callService("oil_tank", service, {
         config_entry_id: st.attributes.config_entry_id,
         [field]: value,
+        ...(price !== null ? { price_per_liter: price } : {}),
       });
       input.value = "";
-      msg.textContent = service === "add_delivery" ? `Added ${fmt(value)} L.` : `Level set from ${fmt(value, 1)} cm.`;
+      if (priceInput) priceInput.value = "";
+      msg.textContent = service === "add_delivery"
+        ? `Added ${fmt(value)} L${price !== null ? ` at € ${fmt(price, 3)}/L` : " (no price)"}.`
+        : `Level set from ${fmt(value, 1)} cm.`;
     } catch (err) {
       msg.textContent = `Not done: ${err.message || err}`;
     }

@@ -248,3 +248,87 @@ async def test_card_registered_as_resource(hass: HomeAssistant) -> None:
     res = hass.data[LOVELACE_DATA].resources
     mine = [r for r in res.async_items() if r["url"].startswith("/oil_tank/oil-tank-card.js?v=")]
     assert len(mine) == 1 and mine[0]["type"] == "module"
+
+
+NOPRICE = {k: v for k, v in DATA.items() if k != "price_entity"}
+TOTAL = "sensor.gasoil_tank_total_cost"
+OILPRICE = "sensor.gasoil_tank_oil_price"
+
+
+async def test_price_per_delivery(hass: HomeAssistant, freezer) -> None:
+    freezer.move_to("2026-11-02 01:00:00+00:00")
+    _runtime(hass, 733268)
+    await _setup(hass, NOPRICE)
+    # 1372.8 L in the tank, price unknown
+    assert hass.states.get(OILPRICE).state == "unknown"
+
+    # 30 L burned with an unknown price: no cost yet
+    freezer.tick(timedelta(hours=11))
+    _runtime(hass, 733268 + 600)
+    await hass.async_block_till_done()
+    assert _f(hass, TOTAL) == 0
+    assert hass.states.get(OILPRICE).attributes["unpriced_liters"] == pytest.approx(30.0)
+
+    # Delivery with the invoice total: 1000 L for 1100 EUR = 1.10 EUR/L.
+    # The old oil and the 30 L burned without a price get the new price.
+    await hass.services.async_call(DOMAIN, "add_delivery", {"liters": 1000, "total_price": 1100}, blocking=True)
+    assert _f(hass, TOTAL) == pytest.approx(33.0)
+    assert _f(hass, OILPRICE) == pytest.approx(1.10)
+    assert hass.states.get(OILPRICE).attributes["unpriced_liters"] == 0
+
+    freezer.tick(timedelta(hours=11))
+    _runtime(hass, 733268 + 1200)  # 30 L more at 1.10
+    await hass.async_block_till_done()
+    assert _f(hass, TOTAL) == pytest.approx(66.0)
+    assert _f(hass, "sensor.gasoil_tank_cost_this_month") == pytest.approx(66.0)
+
+    # A second delivery at another price: the old oil burns first
+    await hass.services.async_call(DOMAIN, "add_delivery", {"liters": 500, "price_per_liter": 1.5}, blocking=True)
+    assert _f(hass, OILPRICE) == pytest.approx(1.10)
+    # (1372.8 - 60 + 1000) * 1.10 + 500 * 1.50
+    assert _f(hass, "sensor.gasoil_tank_tank_value") == pytest.approx(3294.08, abs=0.05)
+    deliveries = hass.states.get(OILPRICE).attributes["deliveries"]
+    assert [x["price"] for x in deliveries] == [1.1, 1.5]
+    assert deliveries[0]["total"] == pytest.approx(1100.0)
+
+
+async def test_fifo_across_batches_and_corrections(hass: HomeAssistant, freezer) -> None:
+    freezer.move_to("2026-11-02 01:00:00+00:00")
+    _runtime(hass, 733268)
+    await _setup(hass, NOPRICE)
+    await hass.services.async_call(DOMAIN, "add_delivery", {"liters": 1000, "price_per_liter": 1.0}, blocking=True)
+    # Gauge correction down to 30 L: the oldest oil goes first, no cost
+    await hass.services.async_call(DOMAIN, "set_level", {"liters": 30}, blocking=True)
+    assert _f(hass, TOTAL) == 0
+    await hass.services.async_call(DOMAIN, "add_delivery", {"liters": 100, "price_per_liter": 2.0}, blocking=True)
+
+    # 60 L burned: 30 L at 1.00 and 30 L at 2.00
+    freezer.tick(timedelta(hours=21))
+    _runtime(hass, 733268 + 1200)
+    await hass.async_block_till_done()
+    assert _f(hass, TOTAL) == pytest.approx(90.0)
+    assert _f(hass, OILPRICE) == pytest.approx(2.0)
+    batches = hass.states.get(OILPRICE).attributes["batches"]
+    assert [(b["liters"], b["price"]) for b in batches] == [(70.0, 2.0)]
+
+    # Gauge correction up: no cost, the batches follow the level
+    await hass.services.async_call(DOMAIN, "set_level", {"liters": 100}, blocking=True)
+    assert _f(hass, TOTAL) == pytest.approx(90.0)
+    assert sum(b["liters"] for b in hass.states.get(OILPRICE).attributes["batches"]) == pytest.approx(100.0)
+
+
+async def test_price_sensor_is_only_a_fallback(hass: HomeAssistant, freezer) -> None:
+    freezer.move_to("2026-11-02 01:00:00+00:00")
+    hass.states.async_set(PRICE, "1.40")
+    _runtime(hass, 733268)
+    await _setup(hass)
+    # Old oil uses the sensor price until a delivery gives a real price
+    assert _f(hass, OILPRICE) == pytest.approx(1.40)
+    await hass.services.async_call(DOMAIN, "add_delivery", {"liters": 500, "price_per_liter": 1.2}, blocking=True)
+    hass.states.async_set(PRICE, "9.99")
+    await hass.async_block_till_done()
+    freezer.tick(timedelta(hours=11))
+    _runtime(hass, 733268 + 600)
+    await hass.async_block_till_done()
+    # The old oil was given the delivery price; the sensor price is not used
+    assert _f(hass, TOTAL) == pytest.approx(36.0)

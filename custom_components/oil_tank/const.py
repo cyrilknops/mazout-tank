@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Final
 
 DOMAIN: Final = "oil_tank"
-VERSION: Final = "2026.11.9"
+VERSION: Final = "2026.11.10"
 
 CONF_RUNTIME_ENTITY: Final = "runtime_entity"
 CONF_PRICE_ENTITY: Final = "price_entity"
@@ -38,5 +38,7 @@ SERVICE_CALIBRATE_FLOW: Final = "calibrate_flow"
 ATTR_CONFIG_ENTRY_ID: Final = "config_entry_id"
 ATTR_LITERS: Final = "liters"
 ATTR_GAUGE_CM: Final = "gauge_cm"
+ATTR_PRICE_PER_LITER: Final = "price_per_liter"
+ATTR_TOTAL_PRICE: Final = "total_price"
 
 CARD_URL: Final = f"/{DOMAIN}/oil-tank-card.js"
