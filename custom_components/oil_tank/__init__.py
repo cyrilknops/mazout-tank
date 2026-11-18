@@ -29,11 +29,13 @@ from .const import (
     ATTR_GAUGE_CM,
     ATTR_LITERS,
     ATTR_PRICE_PER_LITER,
+    ATTR_READING_ID,
     ATTR_TOTAL_PRICE,
     CARD_URL,
     DOMAIN,
     SERVICE_ADD_DELIVERY,
     SERVICE_CALIBRATE_FLOW,
+    SERVICE_DELETE_READING,
     SERVICE_SET_LEVEL,
     VERSION,
 )
@@ -66,6 +68,7 @@ LEVEL_SCHEMA = vol.All(
     ),
     cv.has_at_least_one_key(ATTR_LITERS, ATTR_GAUGE_CM),
 )
+DELETE_SCHEMA = vol.Schema({**_BASE, vol.Required(ATTR_READING_ID): vol.Coerce(int)})
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -109,13 +112,17 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             total_price=call.data.get(ATTR_TOTAL_PRICE),
         )
 
-    async def set_level(call: ServiceCall) -> None:
+    async def set_level(call: ServiceCall) -> ServiceResponse:
+        # A gauge reading: sets the level and recalculates the flow rate from all readings
         tank = _tank(call)
-        tank.set_level(_liters(tank, call))
+        return tank.add_reading(_liters(tank, call), call.data.get(ATTR_GAUGE_CM))
+
+    async def delete_reading(call: ServiceCall) -> ServiceResponse:
+        return _tank(call).delete_reading(call.data[ATTR_READING_ID])
 
     async def calibrate_flow(call: ServiceCall) -> ServiceResponse:
         tank = _tank(call)
-        result = tank.calibrate_flow(_liters(tank, call))
+        result = tank.calibrate_flow(_liters(tank, call), call.data.get(ATTR_GAUGE_CM))
         persistent_notification.async_create(
             hass,
             result["message"],
@@ -125,7 +132,16 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         return result
 
     hass.services.async_register(DOMAIN, SERVICE_ADD_DELIVERY, add_delivery, DELIVERY_SCHEMA)
-    hass.services.async_register(DOMAIN, SERVICE_SET_LEVEL, set_level, LEVEL_SCHEMA)
+    hass.services.async_register(
+        DOMAIN, SERVICE_SET_LEVEL, set_level, LEVEL_SCHEMA, supports_response=SupportsResponse.OPTIONAL
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_DELETE_READING,
+        delete_reading,
+        DELETE_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
     hass.services.async_register(
         DOMAIN,
         SERVICE_CALIBRATE_FLOW,

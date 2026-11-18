@@ -5,7 +5,7 @@
  *   name: Gasoil tank                   # optional
  *   show_actions: true                  # optional, delivery / gauge input
  */
-const CARD_VERSION = "2026.11.9";
+const CARD_VERSION = "2026.11.18";
 
 const fmt = (v, d = 0) =>
   v === null || v === undefined || isNaN(Number(v))
@@ -74,7 +74,21 @@ class OilTankCard extends HTMLElement {
         .act button:focus-visible, .act input:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 1px; }
         .msg { font-size: .8rem; color: var(--secondary-text-color); min-height: 1em; }
         .warn { font-size: .8rem; color: var(--tank-warn); }
-        @container (max-width: 340px) { .actions { grid-template-columns: 1fr; } .row { grid-template-columns: 1fr; gap: 4px; } .mini { display: flex; justify-content: space-between; } }
+        details.rd { font-size: .82rem; color: var(--primary-text-color); }
+        details.rd summary { cursor: pointer; color: var(--secondary-text-color); padding: 2px 0; }
+        details.rd summary b { color: var(--primary-text-color); font-weight: 500; }
+        .rdwrap { overflow-x: auto; margin-top: 6px; }
+        .rdt { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+        .rdt th { text-align: right; font-weight: 400; color: var(--secondary-text-color); font-size: .72rem; padding: 3px 4px; border-bottom: 1px solid var(--divider-color, #ccc); }
+        .rdt td { text-align: right; padding: 4px; border-bottom: 1px solid var(--divider-color, rgba(127,127,127,.2)); white-space: nowrap; }
+        .rdt th:first-child, .rdt td:first-child { text-align: left; }
+        .rdt td.note { color: var(--secondary-text-color); font-size: .72rem; text-align: left; white-space: normal; }
+        .rdt button { font: inherit; font-size: .75rem; padding: 3px 7px; border-radius: 6px; cursor: pointer;
+                      border: 1px solid var(--divider-color, #ccc); background: none; color: var(--secondary-text-color); }
+        .rdt button.arm { border-color: var(--tank-bad); color: var(--tank-bad); }
+        .rdt button:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 1px; }
+        .rdhint { color: var(--secondary-text-color); font-size: .75rem; margin-top: 6px; }
+        @container (max-width: 340px) { .rdt .opt { display: none; } .actions { grid-template-columns: 1fr; } .row { grid-template-columns: 1fr; gap: 4px; } .mini { display: flex; justify-content: space-between; } }
       </style>
       <ha-card>
         <div class="head"><span class="title"></span><span class="badge"></span></div>
@@ -99,6 +113,12 @@ class OilTankCard extends HTMLElement {
           <div class="act"><input id="gauge" type="number" min="0" step="0.5" placeholder="Gauge (cm)" aria-label="Gauge reading in cm"><button id="bgauge">Set</button></div>
         </div>
         <div class="msg" id="msg"></div>
+        <details class="rd" id="rd"><summary id="rdsum">Gauge readings</summary>
+          <div class="rdwrap"><table class="rdt"><thead><tr>
+            <th>Date</th><th>Gauge</th><th class="opt">Level</th><th>Burner</th><th>Used</th><th>L/h</th><th></th>
+          </tr></thead><tbody id="rdbody"></tbody></table></div>
+          <div class="rdhint">Every gauge reading ("Set") is stored. The flow rate comes from all readings together, weighted by burner time; deliveries in between are counted. Delete a reading that was wrong.</div>
+        </details>
       </ha-card>`;
     const $ = (id) => root.getElementById(id);
     root.querySelector(".tankwrap").addEventListener("click", () => {
@@ -108,6 +128,10 @@ class OilTankCard extends HTMLElement {
     });
     $("bdeliv").addEventListener("click", () => this._call("add_delivery", "liters", $("deliv"), $("dprice")));
     $("bgauge").addEventListener("click", () => this._call("set_level", "gauge_cm", $("gauge")));
+    $("rdbody").addEventListener("click", (ev) => {
+      const b = ev.target.closest("button[data-id]");
+      if (b) this._delete(b);
+    });
     this._root = root;
     this._built = true;
   }
@@ -128,19 +152,80 @@ class OilTankCard extends HTMLElement {
     }
     const st = this._hass.states[this._config.entity];
     try {
-      await this._hass.callService("oil_tank", service, {
-        config_entry_id: st.attributes.config_entry_id,
-        [field]: value,
-        ...(price !== null ? { price_per_liter: price } : {}),
-      });
+      const reading = service === "set_level";
+      const res = await this._hass.callService(
+        "oil_tank",
+        service,
+        {
+          config_entry_id: st.attributes.config_entry_id,
+          [field]: value,
+          ...(price !== null ? { price_per_liter: price } : {}),
+        },
+        undefined,
+        true,
+        reading, // a gauge reading returns the calibration result
+      );
       input.value = "";
       if (priceInput) priceInput.value = "";
       msg.textContent = service === "add_delivery"
         ? `Added ${fmt(value)} L${price !== null ? ` at € ${fmt(price, 3)}/L` : " (no price)"}.`
-        : `Level set from ${fmt(value, 1)} cm.`;
+        : (res && res.response && res.response.message) || `Level set from ${fmt(value, 1)} cm.`;
     } catch (err) {
       msg.textContent = `Not done: ${err.message || err}`;
     }
+  }
+
+  async _delete(button) {
+    const msg = this._root.getElementById("msg");
+    // Two clicks: the first one arms the button, so a reading is not deleted by accident
+    if (!button.classList.contains("arm")) {
+      this._root.querySelectorAll(".rdt button.arm").forEach((b) => { b.classList.remove("arm"); b.textContent = "Delete"; });
+      button.classList.add("arm");
+      button.textContent = "Sure?";
+      clearTimeout(this._armTimer);
+      this._armTimer = setTimeout(() => { button.classList.remove("arm"); button.textContent = "Delete"; }, 4000);
+      return;
+    }
+    const st = this._hass.states[this._config.entity];
+    try {
+      const res = await this._hass.callService(
+        "oil_tank",
+        "delete_reading",
+        { config_entry_id: st.attributes.config_entry_id, reading_id: Number(button.dataset.id) },
+        undefined,
+        true,
+        true,
+      );
+      msg.textContent = (res && res.response && res.response.message) || "Reading deleted.";
+    } catch (err) {
+      msg.textContent = `Not deleted: ${err.message || err}`;
+    }
+  }
+
+  _renderReadings(a) {
+    const r = this._root;
+    const rows = Array.isArray(a.readings) ? a.readings : [];
+    const cal = a.calibration || {};
+    const key = JSON.stringify([rows, cal, a.flow_rate]);
+    if (key === this._rdKey) return;
+    this._rdKey = key;
+    r.getElementById("rdsum").innerHTML =
+      `Gauge readings · flow rate <b>${fmt(a.flow_rate, 2)} L/h</b>` +
+      (cal.calibrated ? ` · from ${cal.readings_used} readings, ${fmt(cal.hours, 0)} h` : rows.length ? " · not enough data yet" : "");
+    const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const notes = { reference: "start point (last reference)", correction: "corrected", "refill without delivery": "refill without delivery: new series" };
+    r.getElementById("rdbody").innerHTML = rows.length
+      ? rows.map((x) => {
+          const date = x.date ? esc(x.date.slice(5)) : "–";
+          const gauge = x.gauge_cm !== null && x.gauge_cm !== undefined ? `${fmt(x.gauge_cm, 1)} cm` : "–";
+          const extra = [x.note ? notes[x.note] || esc(x.note) : "", x.delivered ? `+${fmt(x.delivered)} L delivered` : ""].filter(Boolean).join(" · ");
+          return `<tr><td>${date}</td><td>${gauge}</td><td class="opt">${fmt(x.liters)} L</td>` +
+            `<td>${x.hours === null ? "–" : `${fmt(x.hours, 1)} h`}</td><td>${x.used === null ? "–" : `${fmt(x.used)} L`}</td>` +
+            `<td>${x.flow === null ? "–" : fmt(x.flow, 2)}</td>` +
+            `<td><button data-id="${Number(x.id)}" aria-label="Delete reading of ${date}">Delete</button></td></tr>` +
+            (extra ? `<tr><td class="note" colspan="7">${extra}</td></tr>` : "");
+        }).join("")
+      : `<tr><td class="note" colspan="7">No readings yet. Type the gauge value above and press Set.</td></tr>`;
   }
 
   _render() {
@@ -193,6 +278,8 @@ class OilTankCard extends HTMLElement {
       pend.hidden = true;
     }
     $("actions").hidden = !this._config.show_actions;
+    $("rd").hidden = !this._config.show_actions;
+    this._renderReadings(a);
   }
 }
 

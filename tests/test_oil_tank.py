@@ -118,31 +118,170 @@ async def test_pending_until_counter_online(hass: HomeAssistant) -> None:
 
 async def test_actions_and_calibration(hass: HomeAssistant, freezer) -> None:
     _runtime(hass, 733268)
-    await _setup(hass)
+    await _setup(hass)  # reading 1: 48 cm at the setup
 
     await hass.services.async_call(DOMAIN, "add_delivery", {"liters": 1000}, blocking=True)
     assert _f(hass, LEVEL) == pytest.approx(2372.8)
 
-    await hass.services.async_call(DOMAIN, "set_level", {"gauge_cm": 48}, blocking=True)
-    assert _f(hass, LEVEL) == pytest.approx(1372.8)
-
-    # Too early to calibrate
+    # Gauge right after the delivery: a correction of the setup reading (no burner time)
     res = await hass.services.async_call(
-        DOMAIN, "calibrate_flow", {"gauge_cm": 47}, blocking=True, return_response=True
+        DOMAIN, "set_level", {"gauge_cm": 48}, blocking=True, return_response=True
     )
+    assert _f(hass, LEVEL) == pytest.approx(1372.8)
     assert res["calibrated"] is False
+    readings = hass.states.get(LEVEL).attributes["readings"]
+    assert len(readings) == 1 and readings[0]["note"] == "correction"
 
     # 100 h later the gauge shows 38 cm: 1372.8 - 1086.8 = 286 L in 100 h = 2.86 L/h
     freezer.tick(timedelta(hours=101))
     _runtime(hass, 733268 + 6000)
     await hass.async_block_till_done()
     res = await hass.services.async_call(
-        DOMAIN, "calibrate_flow", {"gauge_cm": 38}, blocking=True, return_response=True
+        DOMAIN, "set_level", {"gauge_cm": 38}, blocking=True, return_response=True
     )
     assert res["calibrated"] is True
     assert res["flow_rate"] == pytest.approx(2.86, abs=0.01)
     assert _f(hass, "number.gasoil_tank_burner_flow_rate") == pytest.approx(2.86, abs=0.01)
     assert _f(hass, LEVEL) == pytest.approx(1086.8)
+    top = hass.states.get(LEVEL).attributes["readings"][0]
+    assert top["gauge_cm"] == 38 and top["hours"] == pytest.approx(100) and top["flow"] == pytest.approx(2.86)
+
+    # The older action name does the same
+    freezer.tick(timedelta(hours=101))
+    _runtime(hass, 733268 + 12000)
+    await hass.async_block_till_done()
+    res = await hass.services.async_call(
+        DOMAIN, "calibrate_flow", {"liters": 800.8}, blocking=True, return_response=True
+    )
+    assert res["calibrated"] is True and res["flow_rate"] == pytest.approx(2.86, abs=0.01)
+
+
+async def test_not_enough_data_keeps_flow(hass: HomeAssistant, freezer) -> None:
+    _runtime(hass, 733268)
+    await _setup(hass)
+    freezer.tick(timedelta(hours=11))
+    _runtime(hass, 733268 + 600)  # 10 h
+    await hass.async_block_till_done()
+    res = await hass.services.async_call(
+        DOMAIN, "set_level", {"gauge_cm": 47}, blocking=True, return_response=True
+    )
+    assert res["calibrated"] is False and "Minimum 20 h" in res["message"]
+    assert _f(hass, "number.gasoil_tank_burner_flow_rate") == 3.0
+    assert _f(hass, LEVEL) == pytest.approx(47 * 28.6)
+
+
+async def test_delivery_between_readings(hass: HomeAssistant, freezer) -> None:
+    _runtime(hass, 733268)
+    await _setup(hass)  # 1372.8 L
+    freezer.tick(timedelta(hours=51))
+    _runtime(hass, 733268 + 3000)
+    await hass.async_block_till_done()
+    await hass.services.async_call(DOMAIN, "add_delivery", {"liters": 500}, blocking=True)
+    freezer.tick(timedelta(hours=51))
+    _runtime(hass, 733268 + 6000)
+    await hass.async_block_till_done()
+    # Really used: 1372.8 + 500 - 1586.8 = 286 L in 100 h
+    res = await hass.services.async_call(
+        DOMAIN, "set_level", {"liters": 1586.8}, blocking=True, return_response=True
+    )
+    assert res["flow_rate"] == pytest.approx(2.86, abs=0.01)
+    top = hass.states.get(LEVEL).attributes["readings"][0]
+    assert top["delivered"] == 500 and top["used"] == pytest.approx(286)
+
+
+async def test_all_readings_soften_a_wrong_one(hass: HomeAssistant, freezer) -> None:
+    _runtime(hass, 733268)
+    await _setup(hass)  # 1372.8 L
+    # Real use 3 L/h. The middle reading is 14 L (half a cm) too high.
+    for hours, liters in ((50, 1372.8 - 150 + 14), (100, 1372.8 - 300)):
+        freezer.tick(timedelta(hours=51))
+        _runtime(hass, 733268 + hours * 60)
+        await hass.async_block_till_done()
+        res = await hass.services.async_call(
+            DOMAIN, "set_level", {"liters": liters}, blocking=True, return_response=True
+        )
+    assert res["readings_used"] == 3
+    assert res["flow_rate"] == pytest.approx(3.0, abs=0.01)
+    periods = [r["flow"] for r in hass.states.get(LEVEL).attributes["readings"]]
+    assert periods[0] == pytest.approx(3.28, abs=0.01) and periods[1] == pytest.approx(2.72, abs=0.01)
+
+    # Delete the wrong middle reading: the flow stays 3.0, the period now spans 100 h
+    middle = hass.states.get(LEVEL).attributes["readings"][1]["id"]
+    level = _f(hass, LEVEL)
+    res = await hass.services.async_call(
+        DOMAIN, "delete_reading", {"reading_id": middle}, blocking=True, return_response=True
+    )
+    assert res["deleted"] is True and res["flow_rate"] == pytest.approx(3.0, abs=0.01)
+    readings = hass.states.get(LEVEL).attributes["readings"]
+    assert len(readings) == 2 and readings[0]["hours"] == pytest.approx(100)
+    assert _f(hass, LEVEL) == pytest.approx(level)
+
+
+async def test_delete_keeps_deliveries(hass: HomeAssistant, freezer) -> None:
+    _runtime(hass, 733268)
+    await _setup(hass)  # 1372.8 L
+    freezer.tick(timedelta(hours=31))
+    _runtime(hass, 733268 + 1800)
+    await hass.async_block_till_done()
+    await hass.services.async_call(DOMAIN, "add_delivery", {"liters": 400}, blocking=True)
+    await hass.services.async_call(DOMAIN, "set_level", {"liters": 9999}, blocking=True)  # typo
+    wrong = hass.states.get(LEVEL).attributes["readings"][0]["id"]
+    res = await hass.services.async_call(
+        DOMAIN, "delete_reading", {"reading_id": wrong}, blocking=True, return_response=True
+    )
+    assert res["deleted"] is True
+    freezer.tick(timedelta(hours=31))
+    _runtime(hass, 733268 + 3600)  # 60 h since the setup reading
+    await hass.async_block_till_done()
+    # 1372.8 + 400 - 1592.8 = 180 L in 60 h = 3.0 L/h: the delivery is still counted
+    res = await hass.services.async_call(
+        DOMAIN, "set_level", {"liters": 1592.8}, blocking=True, return_response=True
+    )
+    assert res["flow_rate"] == pytest.approx(3.0, abs=0.01)
+
+
+async def test_refill_without_delivery_starts_new_series(hass: HomeAssistant, freezer) -> None:
+    _runtime(hass, 733268)
+    await _setup(hass)  # 1372.8 L
+    freezer.tick(timedelta(hours=31))
+    _runtime(hass, 733268 + 1800)
+    await hass.async_block_till_done()
+    # Tank filled, but the delivery was not entered
+    await hass.services.async_call(DOMAIN, "set_level", {"liters": 3000}, blocking=True)
+    assert hass.states.get(LEVEL).attributes["readings"][0]["note"] == "refill without delivery"
+    freezer.tick(timedelta(hours=31))
+    _runtime(hass, 733268 + 3600)  # 30 h later, 2.5 L/h
+    await hass.async_block_till_done()
+    res = await hass.services.async_call(
+        DOMAIN, "set_level", {"liters": 2925}, blocking=True, return_response=True
+    )
+    assert res["calibrated"] is True and res["flow_rate"] == pytest.approx(2.5, abs=0.01)
+
+
+async def test_existing_tank_gets_reference_as_first_reading(hass: HomeAssistant, hass_storage, freezer) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, data=DATA, title=DATA["name"], unique_id=SRC)
+    hass_storage[f"{DOMAIN}.{entry.entry_id}"] = {
+        "version": 1,
+        "key": f"{DOMAIN}.{entry.entry_id}",
+        "data": {
+            "ref_level": 1290.0, "ref_runtime": 733268, "pending": False, "flow_rate": 2.8,
+            "last_runtime": 733268, "last_update": None, "day": None, "day_start": None,
+            "month": None, "month_start": None, "history": [], "low_notified": False,
+        },
+    }
+    _runtime(hass, 733268)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    readings = hass.states.get(LEVEL).attributes["readings"]
+    assert len(readings) == 1 and readings[0]["note"] == "reference" and readings[0]["liters"] == 1290.0
+    freezer.tick(timedelta(hours=26))
+    _runtime(hass, 733268 + 25 * 60)
+    await hass.async_block_till_done()
+    res = await hass.services.async_call(
+        DOMAIN, "set_level", {"liters": 1215.0}, blocking=True, return_response=True
+    )
+    assert res["calibrated"] is True and res["flow_rate"] == pytest.approx(3.0, abs=0.01)
 
 
 async def test_flow_change_keeps_level(hass: HomeAssistant, freezer) -> None:

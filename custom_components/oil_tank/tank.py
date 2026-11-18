@@ -12,6 +12,17 @@ each with the price paid per liter. Burned oil comes from the oldest batch
 (first in, first out), so the cost uses the price that was really paid.
 Oil with an unknown price (for example oil that was in the tank before the
 first delivery with a price) gets the price of the next delivery with a price.
+
+Flow rate: every gauge reading is stored with the burner counter at that time.
+The liters really used between two readings are
+
+    previous reading + liters delivered in between - this reading
+
+The flow rate (L/h) is the slope of a straight line through all readings:
+liters used against burner hours. With two readings this is simply liters / hours.
+More readings make the result better; one wrong reading has little effect, and
+it can be deleted. A counter reset or a refill that was not entered starts a new
+series: the slope is fitted per series, with one common flow rate.
 """
 
 from __future__ import annotations
@@ -50,6 +61,10 @@ from .const import (
     HISTORY_DAYS,
     MAX_FLOW_RATE,
     MIN_FLOW_RATE,
+    READING_MERGE_HOURS,
+    READING_PERIOD_MIN_HOURS,
+    READING_REFILL_LITERS,
+    READINGS_KEEP,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -124,6 +139,8 @@ class OilTank:
                 "month_start": None,
                 "history": [],
                 "low_notified": False,
+                # The gauge reading from the setup is the first calibration point
+                "readings": [_reading(1, self._clamp(cm * self.liters_per_cm), cm, None, 0.0, 0)],
             }
         # Cumulative totals for the Energy dashboard (added in 1.1.0)
         stored.setdefault("total_liters", 0.0)
@@ -131,6 +148,18 @@ class OilTank:
         # Price per delivery (added in 2026.11.10)
         stored.setdefault("unpriced_liters", 0.0)
         stored.setdefault("deliveries", [])
+        # Gauge readings for the flow calibration (added in 2026.11.18).
+        # The current reference point is the first reading: the gauge reading or
+        # delivery it came from. Delete it in the card if it was not a real reading.
+        if "readings" not in stored:
+            ref_ok = not stored.get("pending") and stored.get("ref_runtime") is not None
+            stored["readings"] = (
+                [_reading(1, stored["ref_level"], None, stored["ref_runtime"], 0.0, 0, note="reference")]
+                if ref_ok
+                else []
+            )
+        stored.setdefault("epoch", 0)
+        stored.setdefault("delivered_since_reading", 0.0)
         self.data = stored
         if "batches" not in stored:
             # The oil that is in the tank now: price unknown until the next delivery with a price
@@ -261,6 +290,14 @@ class OilTank:
             d["day_start"] = runtime
             d["month_start"] = runtime
             d["history"] = []
+            # Readings before and after a reset cannot be compared: new series
+            d["epoch"] = d.get("epoch", 0) + 1
+
+        # A gauge reading taken while the counter was offline gets this counter value
+        readings = d.get("readings") or []
+        if readings and readings[-1].get("runtime") is None:
+            readings[-1]["runtime"] = runtime
+            readings[-1]["epoch"] = d.get("epoch", 0)
 
         d["last_runtime"] = runtime
         d["last_update"] = now
@@ -558,6 +595,7 @@ class OilTank:
                 d["total_cost"] = d.get("total_cost", 0.0) + d["unpriced_liters"] * price
                 d["unpriced_liters"] = 0.0
         today = dt_util.now().date().isoformat()
+        d["delivered_since_reading"] = d.get("delivered_since_reading", 0.0) + float(liters)
         d["batches"].append({"liters": float(liters), "price": price, "date": today})
         d["deliveries"] = [
             *d.get("deliveries", []),
@@ -577,32 +615,203 @@ class OilTank:
         self.data["flow_rate"] = round(max(MIN_FLOW_RATE, min(flow, MAX_FLOW_RATE)), 3)
         self.set_level(current)
 
+    # ------------------------------------------------------------ calibration
     @callback
-    def calibrate_flow(self, liters_now: float) -> dict[str, Any]:
-        """Calculate the real flow rate from a gauge reading."""
+    def add_reading(self, liters: float, gauge_cm: float | None = None) -> dict[str, Any]:
+        """Store a gauge reading, set the level from it and recalculate the flow rate."""
         d = self.data
-        hours = self.runtime_since_reference
-        used = d["ref_level"] - liters_now
-        if hours is None or hours < CALIBRATE_MIN_HOURS or used < CALIBRATE_MIN_LITERS:
-            return {
-                "calibrated": False,
-                "hours": hours,
-                "used_liters": round(used, 1),
-                "message": (
-                    f"Not enough data: {hours or 0:.1f} h burner time and {used:.0f} L used "
-                    f"since the reference. Minimum {CALIBRATE_MIN_HOURS:.0f} h and "
-                    f"{CALIBRATE_MIN_LITERS:.0f} L."
-                ),
-            }
-        old = self.flow_rate
-        new = round(max(MIN_FLOW_RATE, min(used / hours, MAX_FLOW_RATE)), 3)
-        d["flow_rate"] = new
-        self.set_level(liters_now)
+        liters = self._clamp(liters)
+        readings: list[dict[str, Any]] = d.setdefault("readings", [])
+        runtime = d.get("last_runtime") if self.source_available else None
+        epoch = d.get("epoch", 0)
+        delivered = d.get("delivered_since_reading", 0.0)
+        note = None
+        prev = readings[-1] if readings else None
+        if (
+            prev is not None
+            and runtime is not None
+            and prev.get("runtime") is not None
+            and prev.get("epoch") == epoch
+            and runtime - prev["runtime"] < READING_MERGE_HOURS * 60
+        ):
+            # A correction of the previous reading (no real burner time in between)
+            readings.pop()
+            delivered += prev.get("delivered", 0.0)
+            note = "correction"
+            prev = readings[-1] if readings else None
+        if (
+            prev is not None
+            and prev.get("runtime") is not None
+            and prev.get("epoch") == epoch
+            and prev["liters"] + delivered - liters < -READING_REFILL_LITERS
+        ):
+            # The level went up without a delivery: a refill that was not entered
+            epoch += 1
+            d["epoch"] = epoch
+            note = "refill without delivery"
+        next_id = max((r["id"] for r in readings), default=0) + 1
+        readings.append(_reading(next_id, liters, gauge_cm, runtime, delivered, epoch, note=note))
+        d["readings"] = readings[-READINGS_KEEP:]
+        d["delivered_since_reading"] = 0.0
+
+        result = self._apply_fit()
+        self.set_level(liters)
+        result["reading_id"] = next_id
+        prefix = f"Level set to {liters:.0f} L. "
+        result["message"] = prefix + result["message"]
+        return result
+
+    @callback
+    def delete_reading(self, reading_id: int) -> dict[str, Any]:
+        """Delete a wrong gauge reading and recalculate the flow rate."""
+        d = self.data
+        readings: list[dict[str, Any]] = d.get("readings") or []
+        idx = next((i for i, r in enumerate(readings) if r["id"] == reading_id), None)
+        if idx is None:
+            return {"deleted": False, "calibrated": False, "message": f"Reading {reading_id} not found."}
+        removed = readings.pop(idx)
+        if removed.get("note") == "refill without delivery":
+            # This reading started a new series; without it the series join again
+            back = readings[idx - 1]["epoch"] if idx > 0 else removed["epoch"]
+            for r in readings[idx:]:
+                if r.get("epoch") == removed["epoch"]:
+                    r["epoch"] = back
+            if d.get("epoch") == removed["epoch"]:
+                d["epoch"] = back
+        # The liters delivered before the deleted reading belong to the next period
+        if idx < len(readings):
+            readings[idx]["delivered"] = readings[idx].get("delivered", 0.0) + removed.get("delivered", 0.0)
+        else:
+            d["delivered_since_reading"] = d.get("delivered_since_reading", 0.0) + removed.get("delivered", 0.0)
+        result = self._apply_fit(keep_level=True)
+        result["deleted"] = True
+        result["message"] = f"Reading of {removed.get('date') or 'the reference'} deleted. " + result["message"]
+        self._save()
+        self._notify()
+        return result
+
+    @callback
+    def calibrate_flow(self, liters_now: float, gauge_cm: float | None = None) -> dict[str, Any]:
+        """Older action name: the same as a gauge reading."""
+        return self.add_reading(liters_now, gauge_cm)
+
+    def _series(self) -> list[list[tuple[float, float]]]:
+        """Points (burner hours, liters used) per series, counted from the first reading of the series."""
+        groups: dict[int, list[dict[str, Any]]] = {}
+        for r in self.data.get("readings") or []:
+            if r.get("runtime") is not None:
+                groups.setdefault(r.get("epoch", 0), []).append(r)
+        out: list[list[tuple[float, float]]] = []
+        for rs in groups.values():
+            if len(rs) < 2:
+                continue
+            pts = [(0.0, 0.0)]
+            used = 0.0
+            for prev, cur in zip(rs, rs[1:]):
+                used += prev["liters"] + cur.get("delivered", 0.0) - cur["liters"]
+                pts.append(((cur["runtime"] - rs[0]["runtime"]) / 60, used))
+            out.append(pts)
+        return out
+
+    def fit(self) -> dict[str, Any]:
+        """Flow rate from all readings: one slope, one start value per series."""
+        sxx = sxy = hours = used = 0.0
+        points = 0
+        for pts in self._series():
+            mx = sum(h for h, _ in pts) / len(pts)
+            my = sum(u for _, u in pts) / len(pts)
+            sxx += sum((h - mx) ** 2 for h, _ in pts)
+            sxy += sum((h - mx) * (u - my) for h, u in pts)
+            hours += pts[-1][0]
+            used += pts[-1][1]
+            points += len(pts)
+        flow = sxy / sxx if sxx > 0 else None
+        ok = flow is not None and hours >= CALIBRATE_MIN_HOURS and used >= CALIBRATE_MIN_LITERS
+        if ok and not (MIN_FLOW_RATE <= flow <= MAX_FLOW_RATE):
+            ok = False
         return {
-            "calibrated": True,
-            "hours": hours,
+            "calibrated": ok,
+            "flow_rate": round(flow, 3) if flow is not None else None,
+            "hours": round(hours, 1),
             "used_liters": round(used, 1),
-            "old_flow_rate": old,
-            "flow_rate": new,
-            "message": f"New flow rate {new:.2f} L/h ({used:.0f} L in {hours:.1f} h, was {old:.2f}).",
+            "readings_used": points,
         }
+
+    def _apply_fit(self, keep_level: bool = False) -> dict[str, Any]:
+        res = self.fit()
+        old = self.flow_rate
+        res["old_flow_rate"] = old
+        if res["calibrated"]:
+            new = res["flow_rate"]
+            if keep_level:
+                self.set_flow_rate(new)
+            else:
+                self.data["flow_rate"] = round(new, 3)
+            res["message"] = (
+                f"Flow rate {new:.2f} L/h (was {old:.2f}): {res['used_liters']:.0f} L in "
+                f"{res['hours']:.1f} h burner time, {res['readings_used']} readings."
+            )
+        elif res["flow_rate"] is not None and res["hours"] >= CALIBRATE_MIN_HOURS and res["used_liters"] >= CALIBRATE_MIN_LITERS:
+            res["message"] = (
+                f"Flow rate not changed ({old:.2f} L/h): the readings give {res['flow_rate']:.2f} L/h, "
+                f"outside {MIN_FLOW_RATE}-{MAX_FLOW_RATE} L/h. Check or delete a wrong reading."
+            )
+        else:
+            res["message"] = (
+                f"Flow rate not changed ({old:.2f} L/h): {res['hours']:.1f} h burner time and "
+                f"{res['used_liters']:.0f} L used between the readings. Minimum "
+                f"{CALIBRATE_MIN_HOURS:.0f} h and {CALIBRATE_MIN_LITERS:.0f} L."
+            )
+        return res
+
+    @property
+    def readings_view(self) -> list[dict[str, Any]]:
+        """Readings with the period since the previous reading, newest first (for the card)."""
+        out: list[dict[str, Any]] = []
+        prev_by_epoch: dict[int, dict[str, Any]] = {}
+        for r in self.data.get("readings") or []:
+            item = {
+                "id": r["id"],
+                "date": r.get("date"),
+                "gauge_cm": r.get("gauge_cm"),
+                "liters": round(r["liters"], 1),
+                "delivered": round(r.get("delivered", 0.0), 1),
+                "note": r.get("note"),
+                "hours": None,
+                "used": None,
+                "flow": None,
+            }
+            e = r.get("epoch", 0)
+            prev = prev_by_epoch.get(e)
+            if r.get("runtime") is not None:
+                if prev is not None:
+                    hours = (r["runtime"] - prev["runtime"]) / 60
+                    used = prev["liters"] + r.get("delivered", 0.0) - r["liters"]
+                    item["hours"] = round(hours, 1)
+                    item["used"] = round(used, 1)
+                    if hours >= READING_PERIOD_MIN_HOURS:
+                        item["flow"] = round(used / hours, 2)
+                prev_by_epoch[e] = r
+            out.append(item)
+        return list(reversed(out))
+
+
+def _reading(
+    rid: int,
+    liters: float,
+    gauge_cm: float | None,
+    runtime: float | None,
+    delivered: float,
+    epoch: int,
+    note: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": rid,
+        "date": dt_util.now().strftime("%Y-%m-%d %H:%M") if note != "reference" else None,
+        "liters": round(float(liters), 1),
+        "gauge_cm": gauge_cm,
+        "runtime": runtime,
+        "delivered": round(float(delivered), 1),
+        "epoch": epoch,
+        "note": note,
+    }

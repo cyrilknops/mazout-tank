@@ -73,3 +73,17 @@ calibrate_flow:
           step: 1
           unit_of_measurement: L
           mode: box
+delete_reading:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: oil_tank
+    reading_id:
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 100000
+          step: 1
+          mode: box

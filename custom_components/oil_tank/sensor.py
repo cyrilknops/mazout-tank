@@ -218,4 +218,7 @@ class OilTankSensor(OilTankEntity, SensorEntity):
             "waiting_for_counter": t.pending,
             "source_available": t.source_available,
             "source_entity": t.runtime_entity,
+            # Gauge readings for the flow calibration, newest first
+            "readings": t.readings_view[:12],
+            "calibration": t.fit(),
         }

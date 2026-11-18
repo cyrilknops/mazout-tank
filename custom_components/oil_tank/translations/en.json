@@ -80,8 +80,8 @@
       }
     },
     "set_level": {
-      "name": "Set level",
-      "description": "Sets the level from a gauge reading or a volume.",
+      "name": "Gauge reading",
+      "description": "Sets the level from a gauge reading (or liters) and stores it as a reading. The flow rate is recalculated from all readings.",
       "fields": {
         "config_entry_id": {
           "name": "Tank",
@@ -99,7 +99,7 @@
     },
     "calibrate_flow": {
       "name": "Calibrate flow rate",
-      "description": "Calculates the real burner flow rate from the level drop since the last reference, then sets the new level.",
+      "description": "The same as the gauge reading action (older name): stores the reading, sets the level and recalculates the flow rate from all readings.",
       "fields": {
         "config_entry_id": {
           "name": "Tank",
@@ -112,6 +112,20 @@
         "liters": {
           "name": "Liters",
           "description": "Volume in the tank now (instead of the gauge reading)."
+        }
+      }
+    },
+    "delete_reading": {
+      "name": "Delete reading",
+      "description": "Deletes a wrong gauge reading and recalculates the flow rate.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Tank",
+          "description": "Not necessary when you have one tank."
+        },
+        "reading_id": {
+          "name": "Reading",
+          "description": "The id of the reading (see the readings attribute of the Level sensor or the tank card)."
         }
       }
     }

@@ -66,8 +66,25 @@ The integration keeps the oil in the tank per delivery and burns the oldest oil 
 | Action | Use |
 |---|---|
 | `oil_tank.add_delivery` | After a delivery: liters on the delivery note, and `price_per_liter` or `total_price` |
-| `oil_tank.set_level` | Set the level from the gauge (`gauge_cm`) or in liters |
-| `oil_tank.calibrate_flow` | After ≥ 20 h burner time and ≥ 50 L use: read the gauge; the integration calculates the real L/h |
+| `oil_tank.set_level` | A gauge reading (`gauge_cm`, or `liters`): sets the level, stores the reading and recalculates the flow rate |
+| `oil_tank.delete_reading` | Deletes a wrong gauge reading (`reading_id`) and recalculates the flow rate |
+| `oil_tank.calibrate_flow` | Older name of `set_level` (the same action) |
+
+## Flow rate calibration
+
+Every gauge reading ("Set" in the card, or `set_level`) is stored with the burner counter at that moment.
+The liters really used between two readings are: previous reading + liters delivered in between − this reading.
+
+- The flow rate (L/h) is the slope of one straight line through **all** readings: liters used against burner hours.
+  With two readings this is liters ÷ hours. More readings make it better; one wrong reading has little effect.
+- The flow rate changes only after at least 20 h burner time and 50 L use between the readings.
+- A reading within 1 burner hour of the previous one is a correction: it replaces the previous reading.
+- When the level goes up more than 30 L without a delivery (a refill that was not entered), or the burner counter
+  is reset, a new series starts. All series give one common flow rate.
+- The tank card shows the readings with the burner time, the liters used and the L/h of each period.
+  Delete a wrong reading there (click "Delete" two times); the flow rate is calculated again.
+- Existing installations: the current reference point becomes the first reading ("start point").
+  Delete it if it did not come from a real gauge reading.
 
 ## Cards
 
